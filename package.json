@@ -1,6 +1,6 @@
 {
   "name": "@tripod311/ripple",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "A lightweight eval and regression testing harness for LLM-powered applications and AI agents.",
   "keywords": [
     "llm",
@@ -20,8 +20,7 @@
   "types": "./dist/index.d.ts",
   "files": [
     "dist",
-    "README.md",
-    "LICENSE"
+    "README.md"
   ],
   "bin": {
     "ripple": "./dist/cli.js"
