@@ -110,6 +110,12 @@ export default class Ripple {
 		if (baseline !== undefined) {
 			const { regressions, warnings } = this.compareBaseline(baseline, result);
 
+			if (warnings.length === 0 && regressions.length === 0) {
+				console.log(`All tests matched the baseline.`);
+			} else {
+				console.log(`Differences from the baseline were detected.`);
+			}
+
 			if (warnings.length > 0) {
 				console.log(`Detected following warnings:\n${warnings.join('\n')}`);
 			}
