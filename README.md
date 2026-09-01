@@ -309,6 +309,12 @@ For example, a project containing many agents can select one through `process.ar
 async function beforeAll(conf: RippleConfiguration) {
 	const agentName = process.argv[2];
 
+	/*
+	 * It's reasonable to generate the fingerprint hash from the agent's full prompt
+	 * to provide a more precise identifier for the tests.
+	 */
+	conf.fingerprint = await somehow_generate_fingerprint(agentName);
+
 	conf.execution.in.push(
 		`./agents/${agentName}/evals/*.js`
 	);
