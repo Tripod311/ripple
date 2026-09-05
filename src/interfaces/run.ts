@@ -7,7 +7,7 @@ export type EvalStatus =
 export interface EvalTestResult {
 	status: EvalStatus;
 	details?: string | undefined;
-	agreement?: number | undefined;
+	passRate?: number | undefined;
 	results?: EvalTestResult[] | undefined;
 }
 

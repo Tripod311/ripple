@@ -56,7 +56,9 @@ export default class Ripple {
 		await this.loadSuites();
 
 		// spawn judge
-		this.judge = await this.configuration.judgeFactory();
+		if (this.configuration.judgeFactory) {
+			this.judge = await this.configuration.judgeFactory();
+		}
 
 		// load baseline to compare
 		let baseline: EvalRunResult | undefined = undefined;
@@ -67,7 +69,7 @@ export default class Ripple {
 				baseline = JSON.parse(baselineRaw);
 			} catch (err: any) {
 				console.error(`Failed to load baseline: ${err}`);
-				process.exit(1);
+				return
 			}
 		}
 
@@ -95,10 +97,6 @@ export default class Ripple {
 			result.result.errors += suiteResult.result.errors;
 		}
 
-		// dispose judge
-
-		await this.judge!.dispose();
-
 		// save result
 
 		if (this.configuration.execution.out !== undefined) {
@@ -123,8 +121,17 @@ export default class Ripple {
 			if (regressions.length > 0) {
 				console.log(`Detected following regressions:\n${regressions.join('\n')}`);
 
-				if (this.configuration.execution.failOnRegression) process.exit(1);
+				if (this.configuration.execution.failOnRegression) process.exitCode = 1;
 			}
+		}
+
+		// dispose judge
+		try {
+			if (this.judge !== undefined) {
+				await this.judge!.dispose();
+			}
+		} catch (err: any) {
+			console.log(`Error on judge dispose: ${err}`);
 		}
 	}
 
@@ -178,7 +185,7 @@ export default class Ripple {
 				if (testResult.result.results !== undefined) {
 					console.log(
 						`${testResult.result.status.toUpperCase()} ${testName} ` +
-						`(agreement: ${testResult.result.agreement?.toFixed(2) ?? "n/a"})`
+						`(passRate: ${testResult.result.passRate?.toFixed(2) ?? "n/a"})`
 					);
 
 					for (let i = 0; i < testResult.result.results.length; i++) {
@@ -250,7 +257,7 @@ export default class Ripple {
 			result => result.status === "pass"
 		).length;
 
-		const agreement = passed / trials;
+		const passRate = passed / trials;
 
 		return {
 			name,
@@ -258,11 +265,11 @@ export default class Ripple {
 
 			result: {
 				status:
-					agreement > 0.5
+					passRate > 0.5
 						? "pass"
 						: "fail",
 
-				agreement,
+				passRate,
 				results
 			}
 		};
@@ -298,21 +305,28 @@ export default class Ripple {
 					return await execute();
 				}
 
-				return await Promise.race([
-					execute(),
+				let timer: ReturnType<typeof setTimeout> | undefined;
 
-					new Promise<never>((_, reject) => {
-						const timer = setTimeout(() => {
-							reject(
-								new Error(
-									`Test timed out after ${timeout}ms`
-								)
-							);
-						}, timeout);
+				const timeoutPromise = new Promise<never>((_, reject) => {
+				    timer = setTimeout(() => {
+				        reject(
+				            new Error(`Test timed out after ${timeout}ms`)
+				        );
+				    }, timeout);
 
-						timer.unref?.();
-					})
-				]);
+				    timer.unref?.();
+				});
+
+				try {
+				    return await Promise.race([
+				        execute(),
+				        timeoutPromise
+				    ]);
+				} finally {
+				    if (timer !== undefined) {
+				        clearTimeout(timer);
+				    }
+				}
 			} catch (err) {
 				lastError = err;
 			}
@@ -408,9 +422,9 @@ export default class Ripple {
 						`${previousStatus} -> ${currentStatus}`
 					);
 				} else {
-					if (baselineTest.result.agreement !== undefined && currentTest.result.agreement !== undefined) {
-						if (currentTest.result.agreement < baselineTest.result.agreement - this.configuration.execution.agreement_warning_threshold!) {
-							warnings.push(`${currentSuite.name} -> ${testName}: agreement ${baselineTest.result.agreement} -> ${currentTest.result.agreement}`)
+					if (baselineTest.result.passRate !== undefined && currentTest.result.passRate !== undefined) {
+						if (currentTest.result.passRate < baselineTest.result.passRate - this.configuration.execution.passRate_warning_threshold!) {
+							warnings.push(`${currentSuite.name} -> ${testName}: passRate ${baselineTest.result.passRate} -> ${currentTest.result.passRate}`)
 						}
 					}
 				}

@@ -1,6 +1,6 @@
 {
   "name": "@tripod311/ripple",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A lightweight eval and regression testing harness for LLM-powered applications and AI agents.",
   "keywords": [
     "llm",
@@ -27,11 +27,14 @@
   },
   "scripts": {
     "build": "tsc",
-    "test": "echo \"Error: no tests specified\" && exit 1"
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:typecheck": "tsc -p tsconfig.test.json"
   },
   "devDependencies": {
     "@types/node": "^26.3.0",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.0"
   },
   "dependencies": {
     "glob": "^13.0.6"

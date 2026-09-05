@@ -19,7 +19,7 @@ Ripple provides:
 * Support for arbitrary target input, output, and snapshots
 * Stateful and multi-turn test scenarios
 * Optional LLM-as-a-judge evaluation
-* Repeated trials with majority voting and agreement scores
+* Repeated trials with majority voting and passRate scores
 * Automatic retries and timeouts
 * `pass`, `fail`, `warning`, and `error` results
 * Saved evaluation results
@@ -119,9 +119,9 @@ const config: RippleConfiguration = validateConfig({
 		// Exit with code 1 when a regression is detected.
 		failOnRegression: true,
 
-		// Warn when agreement drops beyond this amount
+		// Warn when passRate drops beyond this amount
 		// while the final test status remains unchanged.
-		agreement_warning_threshold: 0.2,
+		passRate_warning_threshold: 0.2,
 
 		// Maximum execution time for one test attempt.
 		timeout: 30_000,
@@ -249,12 +249,12 @@ LLM behavior is probabilistic, so a test can be executed multiple times:
 
 Each trial starts from a reset target state.
 
-Ripple performs majority voting over the trial results and stores an `agreement` value between `0` and `1`.
+Ripple performs majority voting over the trial results and stores an `passRate` value between `0` and `1`.
 
 For example, if four out of five trials pass:
 
 ```text
-agreement = 0.8
+passRate = 0.8
 ```
 
 A tie does not count as a pass.
@@ -287,7 +287,7 @@ execution: {
 
 Ripple compares current test statuses with the baseline and reports regressions when a test becomes worse.
 
-Agreement changes can also be reported when repeated tests become less stable without changing their final status.
+passRate changes can also be reported when repeated tests become less stable without changing their final status.
 
 Set:
 

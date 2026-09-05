@@ -7,7 +7,7 @@ export interface RippleHooks {
 
 export interface RippleConfiguration {
 	targetFactory: EvalTargetFactory;
-	judgeFactory: JudgeFactory;
+	judgeFactory?: JudgeFactory | undefined;
 	fingerprint?: string | undefined;
 
 	execution: {
@@ -19,8 +19,8 @@ export interface RippleConfiguration {
 		baseline?: string | undefined;
 		// exit 1 if regression detected
 		failOnRegression?: boolean | undefined;
-		// baseline agreement noise threshold
-		agreement_warning_threshold?: number | undefined;
+		// baseline passRate noise threshold
+		passRate_warning_threshold?: number | undefined;
 		// request/response options
 		timeout?: number | undefined;
 		retries?: number | undefined;
@@ -36,10 +36,6 @@ export function validateConfig(conf: RippleConfiguration): RippleConfiguration {
 
 	if (conf.targetFactory === undefined) {
 		throw new Error("targetFactory is not defined");
-	}
-
-	if (conf.judgeFactory === undefined) {
-		throw new Error("judgeFactory is not defined");
 	}
 
 	if (conf.execution === undefined) {
@@ -65,13 +61,14 @@ export function validateConfig(conf: RippleConfiguration): RippleConfiguration {
 	return {
 		targetFactory: conf.targetFactory,
 		judgeFactory: conf.judgeFactory,
+		fingerprint: conf.fingerprint,
 
 		execution: {
 			in: conf.execution.in,
 			out: conf.execution.out,
 			baseline: conf.execution.baseline,
 			failOnRegression: conf.execution.failOnRegression ?? false,
-			agreement_warning_threshold: conf.execution.agreement_warning_threshold ?? 0.05,
+			passRate_warning_threshold: conf.execution.passRate_warning_threshold ?? 0.05,
 			timeout: conf.execution.timeout,
 			retries: conf.execution.retries
 		},
