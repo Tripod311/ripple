@@ -1,5 +1,5 @@
 import { validateConfig } from "./interfaces/config.js"
-import type { RippleConfiguration, RippleHooks } from "./interfaces/config.js"
+import type { RippleConfiguration } from "./interfaces/config.js"
 import EvalContext from "./interfaces/context.js"
 import type { EvalTarget, EvalTargetFactory } from "./interfaces/evalTarget.js"
 import type { Judge, JudgeInput, JudgeFactory } from "./interfaces/judge.js"
@@ -26,7 +26,6 @@ export {
 
 export type {
 	RippleConfiguration,
-	RippleHooks,
 	EvalTarget,
 	EvalTargetFactory,
 	Judge,

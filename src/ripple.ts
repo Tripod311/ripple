@@ -23,14 +23,6 @@ export default class Ripple {
 	}
 
 	async run (): Promise<[EvalRunResult, string[], string[]]> {
-		// run beforeAll hook
-
-		if (this.configuration.hooks !== undefined) {
-			if (this.configuration.hooks.beforeAll !== undefined) {
-				await this.configuration.hooks?.beforeAll(this.configuration);
-			}
-		}
-
 		// run tests
 		const result: EvalRunResult = {
 			result: {
@@ -41,7 +33,9 @@ export default class Ripple {
 				errors: 0
 			},
 
-			suites: []
+			suites: [],
+
+			fingerprint: this.configuration.fingerprint
 		}
 
 		for (const suite of this.suites) {

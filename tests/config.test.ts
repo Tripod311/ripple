@@ -15,7 +15,7 @@ describe('configuration', () => {
 
   it('preserves configured values and an in-memory baseline', () => {
     const { config } = setup({ baseline: report({}), timeout: 25, retries: 0, verbose: true, passRate_warning_threshold: 0 });
-    const input = { ...config, fingerprint: 'v1', hooks: { beforeAll: async () => {} } };
+    const input = { ...config, fingerprint: 'v1' };
     expect(validateConfig(input)).toEqual(input);
   });
 
@@ -23,7 +23,8 @@ describe('configuration', () => {
     [undefined, 'Ripple configuration is not defined'],
     [null, 'Ripple configuration is not defined'],
     [{}, 'targetFactory is not defined'],
-    [{ targetFactory: () => {} }, 'execution configuration is not defined'],
+    [{ targetFactory: () => {} }, 'judgeFactory is not defined'],
+    [{ targetFactory: () => {}, judgeFactory: () => {} }, 'execution configuration is not defined'],
   ])('rejects missing configuration: %j', (input, message) => {
     expect(() => validateConfig(input as RippleConfiguration)).toThrow(message);
   });

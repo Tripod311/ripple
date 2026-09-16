@@ -2,10 +2,6 @@ import type { EvalTarget, EvalTargetFactory } from "./evalTarget.js"
 import type { Judge, JudgeFactory } from "./judge.js"
 import type { EvalRunResult } from "./run.js"
 
-export interface RippleHooks {
-	beforeAll?: (conf: RippleConfiguration) => Promise<void>;
-}
-
 export interface RippleConfiguration {
 	targetFactory: EvalTargetFactory;
 	judgeFactory: JudgeFactory;
@@ -21,8 +17,6 @@ export interface RippleConfiguration {
 		timeout?: number | undefined;
 		retries?: number | undefined;
 	};
-
-	hooks?: RippleHooks | undefined;
 }
 
 export function validateConfig(conf: RippleConfiguration): RippleConfiguration {
@@ -32,6 +26,10 @@ export function validateConfig(conf: RippleConfiguration): RippleConfiguration {
 
 	if (conf.targetFactory === undefined) {
 		throw new Error("targetFactory is not defined");
+	}
+
+	if (conf.judgeFactory === undefined) {
+		throw new Error("judgeFactory is not defined");
 	}
 
 	if (conf.execution === undefined) {
@@ -65,9 +63,7 @@ export function validateConfig(conf: RippleConfiguration): RippleConfiguration {
 			passRate_warning_threshold: conf.execution.passRate_warning_threshold ?? 0.05,
 			timeout: conf.execution.timeout,
 			retries: conf.execution.retries
-		},
-
-		hooks: conf.hooks
+		}
 	};
 }
 

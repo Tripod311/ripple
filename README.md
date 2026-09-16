@@ -4,7 +4,7 @@ A lightweight, provider-agnostic evaluation and regression testing library for L
 
 Write ordinary JavaScript or TypeScript tests around your application's target and judge adapters. Ripple runs them, retries execution errors, aggregates repeated trials, and compares results with an accepted baseline.
 
-The library has no Node.js runtime dependencies. It uses standard JavaScript and Web APIs: `AbortController`, `AbortSignal`, `performance.now()`, timers, and `console`. Your adapters determine any additional runtime requirements.
+The library does not import Node.js built-ins or depend on Node.js-specific runtime APIs. It uses standard JavaScript and Web APIs: `AbortController`, `AbortSignal`, `performance.now()`, timers, and `console`. Your adapters determine any additional runtime requirements.
 
 ## Installation
 
@@ -21,6 +21,8 @@ import { Ripple } from '@tripod311/ripple';
 import type { RippleConfiguration, EvalSuite } from '@tripod311/ripple';
 
 const config: RippleConfiguration = {
+  fingerprint: 'greetings-v1',
+
   // Each invocation creates an independent session for one attempt.
   targetFactory: async () => {
     const messages: string[] = [];
@@ -86,6 +88,39 @@ console.log({ regressions, warnings });
 Register suites explicitly with `addSuite()`. Suites and their tests execute sequentially in registration and object-entry order. There is no separate `Ripple.init()` or `Ripple.dispose()` step.
 
 Ripple does not discover files, load suites from glob patterns, save reports, or set a process exit code. Import suites and persist or publish results in your application using the facilities of your runtime.
+
+### Cloudflare Workers example
+
+Suites can be imported and registered directly in a Worker. Persistence remains the application's responsibility:
+
+```ts
+import { Ripple } from '@tripod311/ripple';
+
+import roleSuite from './tests/role.js';
+import injectionSuite from './tests/injection.js';
+
+const ripple = new Ripple({
+  targetFactory,
+  judgeFactory,
+  fingerprint: testProfileHash,
+  execution: {
+    baseline,
+    timeout: 60_000,
+  },
+});
+
+ripple.addSuite(roleSuite);
+ripple.addSuite(injectionSuite);
+
+const [result, regressions, warnings] = await ripple.run();
+
+await env.REPORTS.put(
+  reportKey,
+  JSON.stringify({ result, regressions, warnings }),
+);
+```
+
+The same API works with suites assembled from application state, including tool-specific suites selected at runtime. Avoid environment-dependent dynamic imports in Worker code unless your bundler can resolve them; static imports are the most portable option.
 
 ## Target and judge adapters
 
@@ -170,23 +205,7 @@ The `Ripple` constructor calls `validateConfig()` to validate and normalize the 
 | `execution.baseline` | Optional previous `EvalRunResult` object, not a file path. |
 | `execution.passRate_warning_threshold` | Allowed pass-rate drop before a warning. Default `0.05`. |
 | `execution.verbose` | Enable progress and baseline-comparison logs. Disabled by default. |
-| `hooks.beforeAll` | Optional async hook, awaited once at the start of each `run()`, before resource creation. Receives the runner's configuration. |
-| `fingerprint` | Optional application metadata accepted by configuration. Currently not copied into the returned report automatically. |
-
-A hook can update the configuration used by that run:
-
-```ts
-const ripple = new Ripple({
-  ...config,
-  hooks: {
-    async beforeAll(conf) {
-      conf.execution.verbose = true;
-    },
-  },
-});
-```
-
-Hook updates are not automatically revalidated. If you need a fingerprint in your stored report, assign `result.fingerprint` yourself before saving it.
+| `fingerprint` | Optional application-defined identifier copied into the returned `EvalRunResult`. It can identify the agent configuration, test profile, or other state used for the run. |
 
 ## Tests, trials, and retries
 
@@ -230,7 +249,7 @@ interface EvalTestResult {
 
 `await ripple.run()` returns `[result, regressions, warnings]`:
 
-- `result` is an `EvalRunResult`, with overall counts and a `suites` array. Each suite contains counts and named test results, including durations in milliseconds. Counts represent tests, not attempts or trials.
+- `result` is an `EvalRunResult`, with the configuration fingerprint, overall counts, and a `suites` array. Each suite contains counts and named test results, including durations in milliseconds. Counts represent tests, not attempts or trials.
 - `regressions` contains human-readable status regressions.
 - `warnings` contains human-readable pass-rate drops. This is separate from the count of tests whose status is `warning`.
 
@@ -258,6 +277,8 @@ async function compareWithBaseline(baseline: EvalRunResult) {
 ```
 
 Comparison matches suites and tests by name. A worsening status is a regression, ordered from best to worst as `pass`, `warning`, `fail`, `error`. When status does not worsen and both reports contain a pass rate, a drop strictly greater than the threshold produces a warning. Unmatched suites and tests are ignored, including removed tests.
+
+Ripple does not decide whether two reports were produced from compatible application configurations. Before supplying a baseline, compare the current fingerprint with the baseline fingerprint according to your application's rules. This is especially important when enabled tools or the selected test suites can change: unmatched suites and tests are intentionally ignored rather than treated as regressions.
 
 You can also call `ripple.compareBaseline(baseline, current)` directly; it returns `{ regressions, warnings }`. Comparisons do not change process state or write files.
 
