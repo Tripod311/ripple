@@ -23,26 +23,11 @@ export default class Ripple {
 		this.configuration = configuration;
 	}
 
-	async loadSuites() {
-		const patterns = this.configuration.execution.in;
-
-		for (const currentPattern of patterns) {
-			const files = await glob(currentPattern, {
-				absolute: true
-			});
-			files.sort();
-
-			for (const filePath of files) {
-				const mod = await import(
-					pathToFileURL(path.resolve(filePath)).href
-				);
-
-				this.suites.push(mod.default);
-			}
-		}
+	addSuite (suite: EvalSuite) {
+		this.suites.push(suite);
 	}
 
-	async run () {
+	async run (): Promise<EvalRunResult, string[], string[]> {
 		// run beforeAll hook
 
 		if (this.configuration.hooks !== undefined) {
@@ -51,26 +36,9 @@ export default class Ripple {
 			}
 		}
 
-		// load suites
-
-		await this.loadSuites();
-
 		// spawn judge
 		if (this.configuration.judgeFactory) {
 			this.judge = await this.configuration.judgeFactory();
-		}
-
-		// load baseline to compare
-		let baseline: EvalRunResult | undefined = undefined;
-
-		if (this.configuration.execution.baseline !== undefined) {
-			try {
-				const baselineRaw = await fs.promises.readFile(this.configuration.execution.baseline, "utf-8");
-				baseline = JSON.parse(baselineRaw);
-			} catch (err: any) {
-				console.error(`Failed to load baseline: ${err}`);
-				return
-			}
 		}
 
 		// run tests
@@ -105,23 +73,28 @@ export default class Ripple {
 
 		// compare to baseline
 
-		if (baseline !== undefined) {
-			const { regressions, warnings } = this.compareBaseline(baseline, result);
+		let regressions: string[] = [];
+		let warnings: string[] = [];
 
-			if (warnings.length === 0 && regressions.length === 0) {
-				console.log(`All tests matched the baseline.`);
-			} else {
-				console.log(`Differences from the baseline were detected.`);
-			}
+		if (this.configuration.execution.baseline !== undefined) {
+			const { cmp_regressions, cmp_warnings } = this.compareBaseline(this.configuration.execution.baseline, result);
+			regressions = cmp_regressions;
+			warnings = cmp_warnings;
 
-			if (warnings.length > 0) {
-				console.log(`Detected following warnings:\n${warnings.join('\n')}`);
-			}
+			if (this.configuration.execution.verbose) {
+				if (warnings.length === 0 && regressions.length === 0) {
+					console.log(`All tests matched the baseline.`);
+				} else {
+					console.log(`Differences from the baseline were detected.`);
+				}
 
-			if (regressions.length > 0) {
-				console.log(`Detected following regressions:\n${regressions.join('\n')}`);
+				if (warnings.length > 0) {
+					console.log(`Detected following warnings:\n${warnings.join('\n')}`);
+				}
 
-				if (this.configuration.execution.failOnRegression) process.exitCode = 1;
+				if (regressions.length > 0) {
+					console.log(`Detected following regressions:\n${regressions.join('\n')}`);
+				}
 			}
 		}
 
@@ -133,10 +106,12 @@ export default class Ripple {
 		} catch (err: any) {
 			console.log(`Error on judge dispose: ${err}`);
 		}
+
+		return [result, regressions, warnings];
 	}
 
 	async runSuite(suite: EvalSuite): Promise<EvalSuiteRunResult> {
-		console.log(`\nRunning suite: ${suite.name}`);
+		if (this.configuration.execution.verbose) console.log(`\nRunning suite: ${suite.name}`);
 
 		const target = await this.configuration.targetFactory();
 		const context = new EvalContext(target, this.judge!);
@@ -182,33 +157,35 @@ export default class Ripple {
 						break;
 				}
 
-				if (testResult.result.results !== undefined) {
-					console.log(
-						`${testResult.result.status.toUpperCase()} ${testName} ` +
-						`(passRate: ${testResult.result.passRate?.toFixed(2) ?? "n/a"})`
-					);
-
-					for (let i = 0; i < testResult.result.results.length; i++) {
-						const trial = testResult.result.results[i];
-
+				if (this.configuration.execution.verbose) {
+					if (testResult.result.results !== undefined) {
 						console.log(
-							`  [${i + 1}] ${trial!.status.toUpperCase()}` +
-							(trial!.details
-								? ` — ${trial!.details}`
+							`${testResult.result.status.toUpperCase()} ${testName} ` +
+							`(passRate: ${testResult.result.passRate?.toFixed(2) ?? "n/a"})`
+						);
+
+						for (let i = 0; i < testResult.result.results.length; i++) {
+							const trial = testResult.result.results[i];
+
+							console.log(
+								`  [${i + 1}] ${trial!.status.toUpperCase()}` +
+								(trial!.details
+									? ` — ${trial!.details}`
+									: "")
+							);
+							// skip line for readability
+							console.log("");
+						}
+					} else {
+						console.log(
+							`${testResult.result.status.toUpperCase()} ${testName}` +
+							(testResult.result.details
+								? ` — ${testResult.result.details}`
 								: "")
 						);
 						// skip line for readability
 						console.log("");
 					}
-				} else {
-					console.log(
-						`${testResult.result.status.toUpperCase()} ${testName}` +
-						(testResult.result.details
-							? ` — ${testResult.result.details}`
-							: "")
-					);
-					// skip line for readability
-					console.log("");
 				}
 			}
 		} finally {
@@ -339,36 +316,6 @@ export default class Ripple {
 					? lastError.message
 					: String(lastError)
 		};
-	}
-
-	async saveResult(result: EvalRunResult): Promise<void> {
-		result.fingerprint = this.configuration.fingerprint;
-		const out = this.configuration.execution.out;
-
-		if (out === undefined) {
-			return;
-		}
-
-		await fs.promises.mkdir(out, {
-			recursive: true
-		});
-
-		const timestamp = new Date()
-			.toISOString()
-			.replace(/[:.]/g, "-");
-
-		const filePath = path.join(
-			out,
-			`result-${timestamp}.json`
-		);
-
-		await fs.promises.writeFile(
-			filePath,
-			JSON.stringify(result, null, 2),
-			"utf-8"
-		);
-
-		console.log(`\nResult saved to ${filePath}`);
 	}
 
 	compareBaseline(

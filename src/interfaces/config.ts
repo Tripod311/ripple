@@ -1,5 +1,6 @@
 import type { EvalTarget, EvalTargetFactory } from "./evalTarget.js"
 import type { Judge, JudgeFactory } from "./judge.js"
+import type { EvalRunResult } from "./run.js"
 
 export interface RippleHooks {
 	beforeAll?: (conf: RippleConfiguration) => Promise<void>;
@@ -11,14 +12,9 @@ export interface RippleConfiguration {
 	fingerprint?: string | undefined;
 
 	execution: {
-		// what to run
-		in: string[];
-		// where to save result
-		out?: string | undefined;
+		verbose?: boolean | undefined;
 		// baseline to compare with
-		baseline?: string | undefined;
-		// exit 1 if regression detected
-		failOnRegression?: boolean | undefined;
+		baseline?: EvalRunResult | undefined;
 		// baseline passRate noise threshold
 		passRate_warning_threshold?: number | undefined;
 		// request/response options
@@ -64,10 +60,8 @@ export function validateConfig(conf: RippleConfiguration): RippleConfiguration {
 		fingerprint: conf.fingerprint,
 
 		execution: {
-			in: conf.execution.in,
-			out: conf.execution.out,
+			verbose: conf.execution.verbose,
 			baseline: conf.execution.baseline,
-			failOnRegression: conf.execution.failOnRegression ?? false,
 			passRate_warning_threshold: conf.execution.passRate_warning_threshold ?? 0.05,
 			timeout: conf.execution.timeout,
 			retries: conf.execution.retries

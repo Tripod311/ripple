@@ -22,9 +22,6 @@
     "dist",
     "README.md"
   ],
-  "bin": {
-    "ripple": "./dist/cli.js"
-  },
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
@@ -35,8 +32,5 @@
     "@types/node": "^26.3.0",
     "typescript": "^7.0.2",
     "vitest": "^5.0.0"
-  },
-  "dependencies": {
-    "glob": "^13.0.6"
   }
 }
