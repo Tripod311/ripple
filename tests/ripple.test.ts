@@ -1,108 +1,132 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { EvalStatus, EvalTestResult } from '../src/index.js';
-import { report, setup } from './helpers.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { EvalContext, EvalStatus, EvalTestResult } from '../src/index.js';
+import { deferred, report, setup } from './helpers.js';
 
-beforeEach(() => { vi.spyOn(console, 'log').mockImplementation(() => {}); });
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe('test execution', () => {
-  it.each<EvalStatus>(['pass', 'warning', 'fail', 'error'])('preserves a single %s result without retrying', async status => {
-    const { ripple, context } = setup({ retries: 2 });
-    const result = { status, details: 'evaluation details' };
-    const test = vi.fn(async () => result);
-    const actual = await ripple.runTest('example', test, context);
-    expect(actual).toEqual({ name: 'example', duration: expect.any(Number), result });
-    expect(actual.duration).toBeGreaterThanOrEqual(0);
-    expect(test).toHaveBeenCalledExactlyOnceWith(context);
+  it.each<EvalStatus>(['pass', 'warning', 'fail', 'error'])('preserves a returned %s without retrying', async status => {
+    const { ripple, targets, judges } = setup({ retries: 2 });
+    const test = vi.fn(async (): Promise<EvalTestResult> => ({ status, details: 'details' }));
+    const actual = await ripple.runTest('example', test);
+    expect(actual).toEqual({ name: 'example', duration: expect.any(Number), result: { status, details: 'details' } });
+    expect(test).toHaveBeenCalledOnce();
+    expect(targets).toHaveLength(1);
+    expect(targets[0]!.dispose).toHaveBeenCalledOnce();
+    expect(judges[0]!.dispose).toHaveBeenCalledOnce();
   });
 
   it.each([
     [['pass', 'pass', 'fail'], 'pass', 2 / 3],
     [['pass', 'fail'], 'fail', 0.5],
     [['warning', 'error', 'fail'], 'fail', 0],
-  ] as [EvalStatus[], EvalStatus, number][])('aggregates trials %j', async (statuses, status, passRate) => {
-    const { ripple, context, target } = setup();
+  ] as [EvalStatus[], EvalStatus, number][])('aggregates trials %j with independent resources', async (statuses, status, passRate) => {
+    const { ripple, targets, judges } = setup();
+    const contexts: EvalContext[] = [];
     const results = statuses.map(status => ({ status }));
-    let index = 0;
-    const run = vi.fn(async () => {
+    const actual = await ripple.runTest('trials', { trials: statuses.length, run: async context => {
       expect(context.interactions).toEqual([]);
+      contexts.push(context);
       await context.send('trial');
-      return results[index++]!;
-    });
-    const actual = await ripple.runTest('repeated', { trials: statuses.length, run }, context);
+      return results[contexts.length - 1]!;
+    } });
     expect(actual.result).toEqual({ status, passRate, results });
-    expect(run).toHaveBeenCalledTimes(statuses.length);
-    expect(target.reset).toHaveBeenCalledTimes(statuses.length - 1);
+    expect(new Set(contexts).size).toBe(statuses.length);
+    expect(new Set(targets).size).toBe(statuses.length);
+    expect(new Set(judges).size).toBe(statuses.length);
+    for (const target of targets) expect(target.dispose).toHaveBeenCalledOnce();
+    for (const judge of judges) expect(judge.dispose).toHaveBeenCalledOnce();
   });
 
-  it('returns the original result for an object with one trial', async () => {
-    const { ripple, context } = setup();
-    expect((await ripple.runTest('one', { trials: 1, run: async () => ({ status: 'warning' }) }, context)).result).toEqual({ status: 'warning' });
+  it.each([1, 0, -1, 1.5, NaN, Infinity, -Infinity])('runs once for trials=%s', async trials => {
+    const { ripple } = setup();
+    const run = vi.fn(async (): Promise<EvalTestResult> => ({ status: 'warning' }));
+    expect((await ripple.runTest('one', { trials, run })).result).toEqual({ status: 'warning' });
+    expect(run).toHaveBeenCalledOnce();
   });
 
-  it('resets history before retrying a thrown error', async () => {
-    const { ripple, context, target } = setup({ retries: 1 });
-    const test = vi.fn()
-      .mockImplementationOnce(async () => { await context.send('failed attempt'); throw new Error('temporary'); })
-      .mockImplementationOnce(async () => { expect(context.interactions).toEqual([]); return { status: 'pass' }; });
-    expect((await ripple.runTest('retry', test, context)).result).toEqual({ status: 'pass' });
-    expect(test).toHaveBeenCalledTimes(2);
-    expect(target.reset).toHaveBeenCalledOnce();
+  it('retries exceptions with fresh resources and closes the failed context', async () => {
+    const { ripple, targets, judges } = setup({ retries: 1 });
+    const contexts: EvalContext[] = [];
+    const result = await ripple.runTest('retry', async context => {
+      contexts.push(context);
+      expect(context.interactions).toEqual([]);
+      await context.send('attempt');
+      if (contexts.length === 1) throw new Error('temporary');
+      await expect(contexts[0]!.send('late')).rejects.toThrow('Aborted');
+      return { status: 'pass' };
+    });
+    expect(result.result.status).toBe('pass');
+    expect(targets).toHaveLength(2);
+    expect(judges).toHaveLength(2);
+    for (const target of targets) expect(target.dispose).toHaveBeenCalledOnce();
+    for (const judge of judges) expect(judge.dispose).toHaveBeenCalledOnce();
   });
 
-  it.each([new Error('last failure'), 'last failure'])('reports the final error when retries are exhausted: %s', async error => {
-    const { ripple, context, target } = setup({ retries: 2 });
+  it.each([new Error('last failure'), 'last failure'])('reports exhausted retries: %s', async error => {
+    const { ripple, targets, judges } = setup({ retries: 2 });
     const test = vi.fn().mockRejectedValue(error);
-    expect((await ripple.runTest('broken', test, context)).result).toEqual({ status: 'error', details: 'last failure' });
+    expect((await ripple.runTest('broken', test)).result).toEqual({ status: 'error', details: 'last failure' });
     expect(test).toHaveBeenCalledTimes(3);
-    expect(target.reset).toHaveBeenCalledTimes(2);
+    for (const target of targets) expect(target.dispose).toHaveBeenCalledOnce();
+    for (const judge of judges) expect(judge.dispose).toHaveBeenCalledOnce();
   });
 
-  it('times out each attempt and exhausts the retry budget', async () => {
+  it('times out every attempt, aborts signals, and releases resources', async () => {
     vi.useFakeTimers();
-    const { ripple, context, target } = setup({ timeout: 100, retries: 1 });
-    const test = vi.fn(() => new Promise<EvalTestResult>(() => {}));
-    const pending = ripple.runTest('slow', test, context);
+    const { ripple, targets, judges } = setup({ timeout: 100, retries: 1 });
+    const test = vi.fn(async (context: EvalContext) => {
+      await context.send('hello');
+      return await new Promise<EvalTestResult>(() => {});
+    });
+    const pending = ripple.runTest('slow', test);
     await vi.advanceTimersByTimeAsync(200);
     expect((await pending).result).toEqual({ status: 'error', details: 'Test timed out after 100ms' });
     expect(test).toHaveBeenCalledTimes(2);
-    expect(target.reset).toHaveBeenCalledOnce();
+    for (const target of targets) {
+      expect(target.send.mock.calls[0]![1].aborted).toBe(true);
+      expect(target.dispose).toHaveBeenCalledOnce();
+    }
+    for (const judge of judges) expect(judge.dispose).toHaveBeenCalledOnce();
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('clears timeout timers after successful execution', async () => {
+  it('keeps a timed-out response out of the retry context', async () => {
     vi.useFakeTimers();
-    const { ripple, context } = setup({ timeout: 100 });
-    expect((await ripple.runTest('fast', async () => ({ status: 'pass' }), context)).result.status).toBe('pass');
+    const { ripple, config, targets } = setup({ timeout: 100, retries: 1 });
+    const late = deferred<unknown>();
+    const makeTarget = config.targetFactory.getMockImplementation()!;
+    config.targetFactory.mockImplementationOnce(async () => {
+      const target = await makeTarget();
+      target.send.mockReturnValue(late.promise);
+      return target;
+    });
+    const contexts: EvalContext[] = [];
+    const pending = ripple.runTest('isolated', async context => {
+      contexts.push(context);
+      await context.send('hello');
+      return { status: 'pass' };
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    expect((await pending).result.status).toBe('pass');
+    late.resolve('late reply');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(contexts).toHaveLength(2);
+    expect(contexts[0]!.interactions).toEqual([]);
+    expect(contexts[1]!.interactions).toEqual([{ input: 'hello', output: 'hello' }]);
+    expect(targets[0]).not.toBe(targets[1]);
     expect(vi.getTimerCount()).toBe(0);
   });
-});
 
-describe('suite execution', () => {
-  it('counts every status, isolates tests, and disposes its target', async () => {
-    const { ripple, target, config } = setup();
-    const statuses: EvalStatus[] = ['pass', 'warning', 'fail', 'error'];
-    const tests = Object.fromEntries(statuses.map(status => [status, async (context: Parameters<typeof ripple.runTest>[2]) => {
-      expect(context.interactions).toEqual([]);
-      await context.send(status);
-      if (status === 'error') throw new Error('broken');
-      return { status };
-    }]));
-    const result = await ripple.runSuite({ name: 'mixed', description: 'all statuses', tests });
-    expect(result).toMatchObject({ name: 'mixed', description: 'all statuses', result: { total: 4, passed: 1, failed: 1, warnings: 1, errors: 1 } });
-    expect(Object.keys(result.result.tests)).toEqual(statuses);
-    expect(config.targetFactory).toHaveBeenCalledOnce();
-    expect(target.reset).toHaveBeenCalledTimes(4);
-    expect(target.dispose).toHaveBeenCalledOnce();
-  });
-
-  it('disposes the target when resetting it fails', async () => {
-    const { ripple, target } = setup();
-    target.reset.mockRejectedValueOnce(new Error('reset failed'));
-    const test = vi.fn(async (): Promise<EvalTestResult> => ({ status: 'pass' }));
-    await expect(ripple.runSuite({ name: 'broken', description: '', tests: { test } })).rejects.toThrow('reset failed');
-    expect(test).not.toHaveBeenCalled();
-    expect(target.dispose).toHaveBeenCalledOnce();
+  it.each([false, true])('clears timers after completion (throws=%s)', async throws => {
+    vi.useFakeTimers();
+    const { ripple } = setup({ timeout: 100 });
+    const result = await ripple.runTest('fast', async () => {
+      if (throws) throw new Error('failed');
+      return { status: 'pass' };
+    });
+    expect(result.result.status).toBe(throws ? 'error' : 'pass');
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

@@ -1,5 +1,5 @@
-import type { EvalTarget } from "./evalTarget.js";
-import type { Judge } from "./judge.js";
+import type { EvalTarget, EvalTargetFactory } from "./evalTarget.js";
+import type { Judge, JudgeFactory } from "./judge.js";
 import type { EvalInteraction, EvalTestResult } from "./run.js";
 
 export default class EvalContext<
@@ -7,21 +7,30 @@ export default class EvalContext<
 	Output = unknown,
 	Snapshot = unknown
 > {
-	public target: EvalTarget<Input, Output, Snapshot>;
-	public judge: Judge;
+	private abortController = new AbortController();
+	private target!: EvalTarget<Input, Output, Snapshot>;
+	private judge!: Judge;
 
 	public interactions: EvalInteraction<Input, Output>[] = [];
 
-	constructor(
-		target: EvalTarget<Input, Output, Snapshot>,
-		judge: Judge
+	async dispose () {
+		this.abort();
+		await this.target.dispose();
+		await this.judge.dispose();
+	}
+
+	async init (
+		targetFactory: EvalTargetFactory<Input, Output, Snapshot>,
+		judgeFactory: JudgeFactory
 	) {
-		this.target = target;
-		this.judge = judge;
+		this.target = await targetFactory();;
+		this.judge = await judgeFactory();
 	}
 
 	async send(input: Input): Promise<Output> {
-		const output = await this.target.send(input);
+		if (this.abortController.signal.aborted) throw new Error("Aborted");
+		const output = await this.target.send(input, this.abortController.signal);
+		if (this.abortController.signal.aborted) throw new Error("Aborted");
 
 		this.interactions.push({
 			input,
@@ -32,20 +41,24 @@ export default class EvalContext<
 	}
 
 	async snapshot(): Promise<Snapshot> {
-		return await this.target.snapshot();
-	}
-
-	async reset(): Promise<void> {
-		this.interactions = [];
-
-		await this.target.reset();
+		if (this.abortController.signal.aborted) throw new Error("Aborted");
+		const result = await this.target.snapshot(this.abortController.signal);
+		if (this.abortController.signal.aborted) throw new Error("Aborted");
+		return result;
 	}
 
 	async evaluate(criteria: string, metadata?: Record<string, unknown>): Promise<EvalTestResult> {
-		return await this.judge.evaluate({
+		if (this.abortController.signal.aborted) throw new Error("Aborted");
+		const result = await this.judge.evaluate({
 			criteria: criteria,
 			interactions: this.interactions,
 			metadata: metadata
-		});
+		}, this.abortController.signal);
+		if (this.abortController.signal.aborted) throw new Error("Aborted");
+		return result
+	}
+
+	abort () {
+		this.abortController.abort();
 	}
 }

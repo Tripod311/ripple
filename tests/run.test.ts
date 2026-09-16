@@ -1,140 +1,82 @@
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Ripple } from '../src/index.js';
+import type { EvalStatus, EvalSuite } from '../src/index.js';
 import { report, setup } from './helpers.js';
 
-let directory: string;
-let originalExitCode: typeof process.exitCode;
-beforeEach(async () => {
-  directory = await mkdtemp(path.join(tmpdir(), 'ripple-test-'));
-  originalExitCode = process.exitCode;
-  vi.spyOn(console, 'log').mockImplementation(() => {});
-  vi.spyOn(console, 'error').mockImplementation(() => {});
-});
-afterEach(async () => {
-  process.exitCode = originalExitCode;
-  vi.restoreAllMocks();
-  vi.useRealTimers();
-  await rm(directory, { recursive: true, force: true });
-});
-
-async function suite(filename: string, name: string, status = 'pass') {
-  await writeFile(path.join(directory, filename), `export default {
-    name: ${JSON.stringify(name)}, description: 'fixture',
-    tests: { test: async (ctx) => { await ctx.send('hello'); return { status: ${JSON.stringify(status)} }; } }
-  };`);
-}
-
-async function saved(out: string) {
-  const files = await readdir(out);
-  expect(files).toHaveLength(1);
-  return JSON.parse(await readFile(path.join(out, files[0]!), 'utf8'));
-}
+afterEach(() => vi.restoreAllMocks());
 
 describe('run integration', () => {
-  it('awaits the hook, loads suites in filename order, aggregates and saves results', async () => {
-    await suite('b.mjs', 'second', 'warning');
-    await suite('a.mjs', 'first');
-    const out = path.join(directory, 'nested', 'results');
-    const { ripple, config, target, judge } = setup({ out });
-    config.judgeFactory = vi.fn(async () => judge);
-    config.hooks = { beforeAll: vi.fn(async conf => {
-      await Promise.resolve();
-      conf.execution.in.push(path.join(directory, '*.mjs'));
-      conf.fingerprint = 'test-version';
-    }) };
-    await ripple.run();
-    const result = await saved(out);
-    expect(result.fingerprint).toBe('test-version');
-    expect(result.result).toEqual({ total: 2, passed: 1, failed: 0, warnings: 1, errors: 0 });
-    expect(result.suites.map((s: { name: string }) => s.name)).toEqual(['first', 'second']);
-    expect(config.hooks.beforeAll).toHaveBeenCalledExactlyOnceWith(config);
-    expect(config.targetFactory).toHaveBeenCalledTimes(2);
-    expect(target.send).toHaveBeenCalledTimes(2);
-    expect(target.dispose).toHaveBeenCalledTimes(2);
-    expect(config.judgeFactory).toHaveBeenCalledOnce();
-    expect(judge.dispose).toHaveBeenCalledOnce();
+  it('awaits beforeAll, runs registered suites in order, and returns a result tuple', async () => {
+    const { config, targets, judges } = setup();
+    const order: string[] = [];
+    const beforeAll = vi.fn(async () => { await Promise.resolve(); order.push('hook'); });
+    const ripple = new Ripple({ ...config, hooks: { beforeAll } });
+    const statuses: EvalStatus[] = ['pass', 'warning', 'fail', 'error'];
+    const suite: EvalSuite = {
+      name: 'mixed', description: 'all statuses',
+      tests: Object.fromEntries(statuses.map(status => [status, async context => {
+        expect(order[0]).toBe('hook');
+        order.push(status);
+        expect(context.interactions).toEqual([]);
+        await context.send(status);
+        if (status === 'error') throw new Error('broken');
+        return { status };
+      }])),
+    };
+    ripple.addSuite(suite);
+    ripple.addSuite({ name: 'judged', description: '', tests: { test: async context => {
+      await context.send('hello');
+      return context.evaluate('polite');
+    } } });
+    const [result, regressions, warnings] = await ripple.run();
+    expect(result.result).toEqual({ total: 5, passed: 2, failed: 1, warnings: 1, errors: 1 });
+    expect(result.suites.map(s => s.name)).toEqual(['mixed', 'judged']);
+    expect(order).toEqual(['hook', ...statuses]);
+    expect(beforeAll).toHaveBeenCalledOnce();
+    expect(regressions).toEqual([]);
+    expect(warnings).toEqual([]);
+    expect(config.targetFactory).toHaveBeenCalledTimes(5);
+    expect(config.judgeFactory).toHaveBeenCalledTimes(5);
+    expect(judges[4]!.evaluate).toHaveBeenCalledWith({ criteria: 'polite', interactions: [{ input: 'hello', output: 'hello' }], metadata: undefined }, expect.any(AbortSignal));
+    for (const target of targets) expect(target.dispose).toHaveBeenCalledOnce();
+    for (const judge of judges) expect(judge.dispose).toHaveBeenCalledOnce();
   });
 
-  it('passes the configured judge to evaluation tests', async () => {
-    await writeFile(path.join(directory, 'judge.mjs'), `export default {
-      name: 'judged', description: '', tests: { test: async ctx => {
-        await ctx.send('hello'); return ctx.evaluate('polite');
-      } }
-    };`);
-    const { ripple, config, judge } = setup({ in: [path.join(directory, '*.mjs')] });
-    config.judgeFactory = async () => judge;
-    await ripple.run();
-    expect(judge.evaluate).toHaveBeenCalledWith({ criteria: 'polite', interactions: [{ input: 'hello', output: 'hello' }], metadata: undefined });
-    expect(judge.dispose).toHaveBeenCalledOnce();
-  });
-
-  it('handles patterns with no matching suites without creating a target', async () => {
-    const out = path.join(directory, 'results');
-    const { ripple, config } = setup({ in: [path.join(directory, '*.mjs')], out });
-    await ripple.run();
-    expect((await saved(out)).result).toEqual({ total: 0, passed: 0, failed: 0, warnings: 0, errors: 0 });
+  it('does not allocate resources for an empty suite or run', async () => {
+    const { ripple, config } = setup();
+    const [empty] = await ripple.run();
+    expect(empty.suites).toEqual([]);
+    expect(empty.result.total).toBe(0);
+    ripple.addSuite({ name: 'empty', description: '', tests: {} });
+    const [result] = await ripple.run();
+    expect(result.suites).toHaveLength(1);
     expect(config.targetFactory).not.toHaveBeenCalled();
+    expect(config.judgeFactory).not.toHaveBeenCalled();
   });
 
-  it.each([true, false])('sets exit code for regressions only when enabled: %s', async failOnRegression => {
-    await suite('suite.mjs', 'suite', 'fail');
-    const baseline = path.join(directory, 'baseline.json');
-    await writeFile(baseline, JSON.stringify(report({ test: { status: 'pass' } })));
-    const { ripple } = setup({ in: [path.join(directory, '*.mjs')], baseline, failOnRegression });
-    process.exitCode = 0;
-    await ripple.run();
-    expect(process.exitCode).toBe(failOnRegression ? 1 : 0);
-    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('suite -> test: pass -> fail'));
+  it.each([false, true])('returns baseline differences independently of verbose=%s', async verbose => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const baseline = report({ regression: { status: 'pass' }, rate: { status: 'pass', passRate: 1 } });
+    const { ripple } = setup({ baseline, verbose });
+    let trial = 0;
+    ripple.addSuite({ name: 'suite', description: '', tests: {
+      regression: async () => ({ status: 'fail' }),
+      rate: { trials: 3, run: async () => ({ status: ++trial < 3 ? 'pass' : 'fail' }) },
+    } });
+    const [result, regressions, warnings] = await ripple.run();
+    expect(result.result).toEqual({ total: 2, passed: 1, failed: 1, warnings: 0, errors: 0 });
+    expect(regressions).toEqual(['suite -> regression: pass -> fail']);
+    expect(warnings).toEqual([`suite -> rate: passRate 1 -> ${2 / 3}`]);
+    if (verbose) expect(log).toHaveBeenCalledWith('Differences from the baseline were detected.');
+    else expect(log).not.toHaveBeenCalled();
   });
 
-  it('reports a matching baseline', async () => {
-    await suite('suite.mjs', 'suite');
-    const baseline = path.join(directory, 'baseline.json');
-    await writeFile(baseline, JSON.stringify(report({ test: { status: 'pass' } })));
-    const { ripple } = setup({ in: [path.join(directory, '*.mjs')], baseline });
-    await ripple.run();
-    expect(console.log).toHaveBeenCalledWith('All tests matched the baseline.');
-  });
-
-  it.each(['missing', 'invalid'])('reports %s baseline and skips execution', async kind => {
-    await suite('suite.mjs', 'suite');
-    const baseline = path.join(directory, 'baseline.json');
-    if (kind === 'invalid') await writeFile(baseline, 'not json');
-    const { ripple, config } = setup({ in: [path.join(directory, '*.mjs')], baseline });
-    await ripple.run();
-    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('Failed to load baseline:'));
-    expect(config.targetFactory).not.toHaveBeenCalled();
-  });
-
-  it('logs judge disposal failures without rejecting the run', async () => {
-    const { ripple, config, judge } = setup();
-    config.judgeFactory = async () => judge;
-    judge.dispose.mockRejectedValue(new Error('cleanup failed'));
-    await expect(ripple.run()).resolves.toBeUndefined();
-    expect(console.log).toHaveBeenCalledWith('Error on judge dispose: Error: cleanup failed');
-  });
-});
-
-describe('saveResult', () => {
-  it('writes timestamped JSON with the configured fingerprint to an existing directory', async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-01-02T03:04:05.006Z'));
-    const out = path.join(directory, 'results');
-    await mkdir(out);
-    const { ripple, config } = setup({ out });
-    config.fingerprint = 'v2';
-    const result = report({ test: { status: 'pass' } });
-    await ripple.saveResult(result);
-    expect(await readdir(out)).toEqual(['result-2026-01-02T03-04-05-006Z.json']);
-    expect(await saved(out)).toEqual({ ...result, fingerprint: 'v2' });
-  });
-
-  it('does not write files when output is not configured', async () => {
-    const { ripple } = setup();
-    await ripple.saveResult(report({}));
-    expect(console.log).not.toHaveBeenCalled();
-    expect(await readdir(directory)).toEqual([]);
+  it('lets beforeAll update the configuration used by this run', async () => {
+    const { config } = setup();
+    const ripple = new Ripple({ ...config, hooks: { beforeAll: async conf => {
+      conf.execution.baseline = report({ test: { status: 'pass' } });
+    } } });
+    ripple.addSuite({ name: 'suite', description: '', tests: { test: async () => ({ status: 'fail' }) } });
+    expect((await ripple.run())[1]).toEqual(['suite -> test: pass -> fail']);
   });
 });

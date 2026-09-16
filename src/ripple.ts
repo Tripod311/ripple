@@ -1,8 +1,4 @@
-import fs from "node:fs"
-import { pathToFileURL } from "node:url";
-import path from "node:path"
-import { glob } from "glob";
-import type { RippleConfiguration } from "./interfaces/config.js"
+import { validateConfig, type RippleConfiguration } from "./interfaces/config.js"
 import type { EvalSuite, EvalTest } from "./interfaces/suite.js"
 import type { Judge } from "./interfaces/judge.js"
 import type {
@@ -17,28 +13,22 @@ import EvalContext from "./interfaces/context.js"
 export default class Ripple {
 	private configuration: RippleConfiguration;
 	private suites: EvalSuite[] = [];
-	private judge?: Judge;
 
 	constructor (configuration: RippleConfiguration) {
-		this.configuration = configuration;
+		this.configuration = validateConfig(configuration);
 	}
 
 	addSuite (suite: EvalSuite) {
 		this.suites.push(suite);
 	}
 
-	async run (): Promise<EvalRunResult, string[], string[]> {
+	async run (): Promise<[EvalRunResult, string[], string[]]> {
 		// run beforeAll hook
 
 		if (this.configuration.hooks !== undefined) {
 			if (this.configuration.hooks.beforeAll !== undefined) {
 				await this.configuration.hooks?.beforeAll(this.configuration);
 			}
-		}
-
-		// spawn judge
-		if (this.configuration.judgeFactory) {
-			this.judge = await this.configuration.judgeFactory();
 		}
 
 		// run tests
@@ -65,21 +55,15 @@ export default class Ripple {
 			result.result.errors += suiteResult.result.errors;
 		}
 
-		// save result
-
-		if (this.configuration.execution.out !== undefined) {
-			await this.saveResult(result);
-		}
-
 		// compare to baseline
 
 		let regressions: string[] = [];
 		let warnings: string[] = [];
 
 		if (this.configuration.execution.baseline !== undefined) {
-			const { cmp_regressions, cmp_warnings } = this.compareBaseline(this.configuration.execution.baseline, result);
-			regressions = cmp_regressions;
-			warnings = cmp_warnings;
+			const compareResult = this.compareBaseline(this.configuration.execution.baseline, result);
+			regressions = compareResult.regressions;
+			warnings = compareResult.warnings;
 
 			if (this.configuration.execution.verbose) {
 				if (warnings.length === 0 && regressions.length === 0) {
@@ -98,23 +82,11 @@ export default class Ripple {
 			}
 		}
 
-		// dispose judge
-		try {
-			if (this.judge !== undefined) {
-				await this.judge!.dispose();
-			}
-		} catch (err: any) {
-			console.log(`Error on judge dispose: ${err}`);
-		}
-
 		return [result, regressions, warnings];
 	}
 
 	async runSuite(suite: EvalSuite): Promise<EvalSuiteRunResult> {
 		if (this.configuration.execution.verbose) console.log(`\nRunning suite: ${suite.name}`);
-
-		const target = await this.configuration.targetFactory();
-		const context = new EvalContext(target, this.judge!);
 
 		const suiteResult: EvalSuiteRunResult = {
 			name: suite.name,
@@ -130,66 +102,59 @@ export default class Ripple {
 			}
 		};
 
-		try {
-			for (const [testName, test] of Object.entries(suite.tests)) {
-				await context.reset();
+		for (const [testName, test] of Object.entries(suite.tests)) {
+			const testResult = await this.runTest(
+				testName,
+				test
+			);
 
-				const testResult = await this.runTest(
-					testName,
-					test,
-					context
-				);
+			suiteResult.result.tests[testName] = testResult;
 
-				suiteResult.result.tests[testName] = testResult;
+			switch (testResult.result.status) {
+				case "pass":
+					suiteResult.result.passed++;
+					break;
+				case "fail":
+					suiteResult.result.failed++;
+					break;
+				case "warning":
+					suiteResult.result.warnings++;
+					break;
+				case "error":
+					suiteResult.result.errors++;
+					break;
+			}
 
-				switch (testResult.result.status) {
-					case "pass":
-						suiteResult.result.passed++;
-						break;
-					case "fail":
-						suiteResult.result.failed++;
-						break;
-					case "warning":
-						suiteResult.result.warnings++;
-						break;
-					case "error":
-						suiteResult.result.errors++;
-						break;
-				}
+			if (this.configuration.execution.verbose) {
+				if (testResult.result.results !== undefined) {
+					console.log(
+						`${testResult.result.status.toUpperCase()} ${testName} ` +
+						`(passRate: ${testResult.result.passRate?.toFixed(2) ?? "n/a"})`
+					);
 
-				if (this.configuration.execution.verbose) {
-					if (testResult.result.results !== undefined) {
+					for (let i = 0; i < testResult.result.results.length; i++) {
+						const trial = testResult.result.results[i];
+
 						console.log(
-							`${testResult.result.status.toUpperCase()} ${testName} ` +
-							`(passRate: ${testResult.result.passRate?.toFixed(2) ?? "n/a"})`
-						);
-
-						for (let i = 0; i < testResult.result.results.length; i++) {
-							const trial = testResult.result.results[i];
-
-							console.log(
-								`  [${i + 1}] ${trial!.status.toUpperCase()}` +
-								(trial!.details
-									? ` — ${trial!.details}`
-									: "")
-							);
-							// skip line for readability
-							console.log("");
-						}
-					} else {
-						console.log(
-							`${testResult.result.status.toUpperCase()} ${testName}` +
-							(testResult.result.details
-								? ` — ${testResult.result.details}`
+							`  [${i + 1}] ${trial!.status.toUpperCase()}` +
+							(trial!.details
+								? ` — ${trial!.details}`
 								: "")
 						);
 						// skip line for readability
 						console.log("");
 					}
+				} else {
+					console.log(
+						`${testResult.result.status.toUpperCase()} ${testName}` +
+						(testResult.result.details
+							? ` — ${testResult.result.details}`
+							: "")
+					);
+					// skip line for readability
+					console.log("");
 				}
 			}
-		} finally {
-			await target.dispose();
 		}
 
 		return suiteResult;
@@ -197,26 +162,24 @@ export default class Ripple {
 
 	async runTest(
 		name: string,
-		test: EvalTest,
-		context: EvalContext
+		test: EvalTest
 	): Promise<EvalTestRunResult> {
 		const startedAt = performance.now();
 
-		const trials =
-			typeof test === "function"
-				? 1
-				: test.trials;
+		let trials: number = 1;
+
+		if (typeof test !== "function") {
+			trials = test.trials;
+			if (!Number.isInteger(trials) || trials <= 0) {
+				trials = 1;
+			}
+		}
 
 		const results: EvalTestResult[] = [];
 
 		for (let trial = 0; trial < trials; trial++) {
-			if (trial > 0) {
-				await context.reset();
-			}
-
 			const result = await this.executeTest(
-				test,
-				context
+				test
 			);
 
 			results.push(result);
@@ -253,20 +216,17 @@ export default class Ripple {
 	}
 
 	private async executeTest(
-		test: EvalTest,
-		context: EvalContext
+		test: EvalTest
 	): Promise<EvalTestResult> {
-		const retries =
-			this.configuration.execution.retries ?? 0;
+		const retries = this.configuration.execution.retries ?? 0;
 
 		let lastError: unknown;
 
 		for (let attempt = 0; attempt <= retries; attempt++) {
-			try {
-				if (attempt > 0) {
-					await context.reset();
-				}
+			const context = new EvalContext();
+			await context.init(this.configuration.targetFactory, this.configuration.judgeFactory);
 
+			try {
 				const execute = async () => {
 					if (typeof test === "function") {
 						return await test(context);
@@ -275,8 +235,7 @@ export default class Ripple {
 					return await test.run(context);
 				};
 
-				const timeout =
-					this.configuration.execution.timeout;
+				const timeout = this.configuration.execution.timeout;
 
 				if (timeout === undefined) {
 					return await execute();
@@ -286,17 +245,21 @@ export default class Ripple {
 
 				const timeoutPromise = new Promise<never>((_, reject) => {
 				    timer = setTimeout(() => {
+				    	context.abort();
 				        reject(
 				            new Error(`Test timed out after ${timeout}ms`)
 				        );
 				    }, timeout);
-
-				    timer.unref?.();
 				});
 
 				try {
 				    return await Promise.race([
-				        execute(),
+				        (async () => {
+				        	const res = await execute();
+				        	clearTimeout(timer);
+
+				        	return res;
+				        })(),
 				        timeoutPromise
 				    ]);
 				} finally {
@@ -306,6 +269,8 @@ export default class Ripple {
 				}
 			} catch (err) {
 				lastError = err;
+			} finally {
+				await context.dispose();
 			}
 		}
 

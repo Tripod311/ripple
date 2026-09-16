@@ -3,12 +3,11 @@ export interface EvalTarget<
 	Output = unknown,
 	Snapshot = unknown
 > {
-	send(input: Input): Promise<Output>;
+	send(input: Input, signal: AbortSignal): Promise<Output>;
 
-	reset(): Promise<void>;
 	dispose(): Promise<void>;
 
-	snapshot(): Promise<Snapshot>;
+	snapshot(signal: AbortSignal): Promise<Snapshot>;
 }
 
 export type EvalTargetFactory<

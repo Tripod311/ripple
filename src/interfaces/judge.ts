@@ -9,7 +9,7 @@ export interface JudgeInput {
 }
 
 export interface Judge {
-	evaluate(input: JudgeInput): Promise<EvalTestResult>;
+	evaluate(input: JudgeInput, signal: AbortSignal): Promise<EvalTestResult>;
 
 	dispose(): Promise<void>;
 }

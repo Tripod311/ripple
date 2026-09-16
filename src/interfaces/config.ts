@@ -8,7 +8,7 @@ export interface RippleHooks {
 
 export interface RippleConfiguration {
 	targetFactory: EvalTargetFactory;
-	judgeFactory?: JudgeFactory | undefined;
+	judgeFactory: JudgeFactory;
 	fingerprint?: string | undefined;
 
 	execution: {

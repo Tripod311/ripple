@@ -11,8 +11,8 @@
     "module": "nodenext",
     "target": "esnext",
     // For nodejs:
-    "lib": ["esnext"],
-    "types": ["node"],
+    // "lib": ["esnext"],
+    "types": [],
     // and npm install -D @types/node
 
     // Other Outputs
